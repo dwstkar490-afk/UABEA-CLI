@@ -2,8 +2,6 @@ using AssetsTools.NET;
 using AssetsTools.NET.Extra;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
-using Fmod5Sharp;
-using Fmod5Sharp.FmodTypes;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -11,34 +9,20 @@ using System.Threading.Tasks;
 using UABEAvalonia;
 using UABEAvalonia.Plugins;
 
-namespace AudioPlugin
+namespace VideoClipPlugin
 {
-    public enum CompressionFormat
-    {
-        PCM,
-        Vorbis,
-        ADPCM,
-        MP3,
-        VAG,
-        HEVAG,
-        XMA,
-        AAC,
-        GCADPCM,
-        ATRAC9
-    }
-
-    public class ExportAudioClipOption : UABEAPluginOption
+    public class ExportVideoClipOption : UABEAPluginOption
     {
         public bool SelectionValidForPlugin(AssetsManager am, UABEAPluginAction action, List<AssetContainer> selection, out string name)
         {
-            name = "Export audio file";
+            name = "Export video file";
 
             if (action != UABEAPluginAction.Export)
                 return false;
 
             foreach (AssetContainer cont in selection)
             {
-                if (cont.ClassId != (int)AssetClassID.AudioClip)
+                if (cont.ClassId != 329) // VideoClip ClassID
                     return false;
             }
             return true;
@@ -72,34 +56,23 @@ namespace AudioPlugin
                 string name = baseField["m_Name"].AsString;
                 name = PathUtils.ReplaceInvalidPathChars(name);
 
-                CompressionFormat compressionFormat = (CompressionFormat)baseField["m_CompressionFormat"].AsInt;
-                string extension = GetExtension(compressionFormat);
+                // Get the original path to determine file extension
+                string originalPath = baseField["m_OriginalPath"].AsString;
+                string extension = GetExtensionFromPath(originalPath);
+                
                 string file = Path.Combine(dir, $"{name}-{Path.GetFileName(cont.FileInstance.path)}-{cont.PathId}.{extension}");
 
-                string ResourceSource = baseField["m_Resource.m_Source"].AsString;
-                ulong ResourceOffset = baseField["m_Resource.m_Offset"].AsULong;
-                ulong ResourceSize = baseField["m_Resource.m_Size"].AsULong;
+                string externalResourcesFile = baseField["m_ExternalResources.m_Source"].AsString;
+                ulong resourceOffset = baseField["m_ExternalResources.m_Offset"].AsULong;
+                ulong resourceSize = baseField["m_ExternalResources.m_Size"].AsULong;
 
-                byte[] resourceData;
-                if (!GetAudioBytes(cont, ResourceSource, ResourceOffset, ResourceSize, out resourceData))
+                byte[] videoData;
+                if (!GetVideoBytes(cont, externalResourcesFile, resourceOffset, resourceSize, out videoData))
                 {
                     continue;
                 }
 
-                if (!FsbLoader.TryLoadFsbFromByteArray(resourceData, out FmodSoundBank bank))
-                {
-                    continue;
-                }
-                List<FmodSample> samples = bank.Samples;
-                samples[0].RebuildAsStandardFileFormat(out byte[] sampleData, out string sampleExtension);
-
-                if (sampleExtension.ToLowerInvariant() == "wav")
-                {
-                    // since fmod5sharp gives us malformed wav data, we have to correct it
-                    FixWAV(ref sampleData);
-                }
-
-                File.WriteAllBytes(file, sampleData);
+                File.WriteAllBytes(file, videoData);
             }
             return true;
         }
@@ -112,15 +85,17 @@ namespace AudioPlugin
             string name = baseField["m_Name"].AsString;
             name = PathUtils.ReplaceInvalidPathChars(name);
 
-            CompressionFormat compressionFormat = (CompressionFormat)baseField["m_CompressionFormat"].AsInt;
+            // Get the original path to determine file extension
+            string originalPath = baseField["m_OriginalPath"].AsString;
+            string extension = GetExtensionFromPath(originalPath);
 
-            string extension = GetExtension(compressionFormat);
             var selectedFile = await win.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions()
             {
-                Title = "Save audio file",
+                Title = "Save video file",
                 FileTypeChoices = new List<FilePickerFileType>()
                 {
-                    new FilePickerFileType($"{extension.ToUpper()} file (*.{extension})") { Patterns = new List<string>() { "*." + extension } }
+                    new FilePickerFileType($"{extension.ToUpper()} file (*.{extension})") { Patterns = new List<string>() { "*." + extension } },
+                    new FilePickerFileType("All video files") { Patterns = new List<string>() { "*.mp4", "*.webm", "*.mov", "*.avi", "*.mkv" } }
                 },
                 DefaultExtension = extension,
                 SuggestedFileName = $"{name}-{Path.GetFileName(cont.FileInstance.path)}-{cont.PathId}"
@@ -130,89 +105,40 @@ namespace AudioPlugin
             if (selectedFilePath == null)
                 return false;
 
-            string ResourceSource = baseField["m_Resource.m_Source"].AsString;
-            ulong ResourceOffset = baseField["m_Resource.m_Offset"].AsULong;
-            ulong ResourceSize = baseField["m_Resource.m_Size"].AsULong;
+            string externalResourcesFile = baseField["m_ExternalResources.m_Source"].AsString;
+            ulong resourceOffset = baseField["m_ExternalResources.m_Offset"].AsULong;
+            ulong resourceSize = baseField["m_ExternalResources.m_Size"].AsULong;
 
-            byte[] resourceData;
-            if (!GetAudioBytes(cont, ResourceSource, ResourceOffset, ResourceSize, out resourceData))
+            byte[] videoData;
+            if (!GetVideoBytes(cont, externalResourcesFile, resourceOffset, resourceSize, out videoData))
             {
                 return false;
             }
 
-            if (!FsbLoader.TryLoadFsbFromByteArray(resourceData, out FmodSoundBank bank))
-            {
-                return false;
-            }
-            List<FmodSample> samples = bank.Samples;
-            samples[0].RebuildAsStandardFileFormat(out byte[] sampleData, out string sampleExtension);
-
-            if (sampleExtension.ToLowerInvariant() == "wav")
-            {
-                // since fmod5sharp gives us malformed wav data, we have to correct it
-                FixWAV(ref sampleData);
-            }
-
-            File.WriteAllBytes(selectedFilePath, sampleData);
+            File.WriteAllBytes(selectedFilePath, videoData);
 
             return true;
         }
 
-        private static void FixWAV(ref byte[] wavData)
+        private static string GetExtensionFromPath(string originalPath)
         {
-            int origLength = wavData.Length;
-            // remove ExtraParamSize field from fmt subchunk
-            for (int i = 36; i < origLength - 2; i++)
+            if (string.IsNullOrEmpty(originalPath))
+                return "mp4"; // default extension
+
+            string ext = Path.GetExtension(originalPath);
+            if (!string.IsNullOrEmpty(ext) && ext.Length > 1)
             {
-                wavData[i] = wavData[i + 2];
+                return ext.Substring(1); // remove the dot
             }
-            Array.Resize(ref wavData, origLength - 2);
-            // write ChunkSize to RIFF chunk
-            byte[] riffHeaderChunkSize = BitConverter.GetBytes(wavData.Length - 8);
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(riffHeaderChunkSize);
-            }
-            riffHeaderChunkSize.CopyTo(wavData, 4);
-            // write ChunkSize to fmt chunk
-            byte[] fmtHeaderChunkSize = BitConverter.GetBytes(16); // it is always 16 for pcm data, which this always
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(fmtHeaderChunkSize);
-            }
-            fmtHeaderChunkSize.CopyTo(wavData, 16);
-            // write ChunkSize to data chunk
-            byte[] dataHeaderChunkSize = BitConverter.GetBytes(wavData.Length - 44);
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(dataHeaderChunkSize);
-            }
-            dataHeaderChunkSize.CopyTo(wavData, 40);
+
+            return "mp4"; // default extension
         }
 
-        private static string GetExtension(CompressionFormat format)
-        {
-            return format switch
-            {
-                CompressionFormat.PCM => "wav",
-                CompressionFormat.Vorbis => "ogg",
-                CompressionFormat.ADPCM => "wav",
-                CompressionFormat.MP3 => "mp3",
-                CompressionFormat.VAG => "dat", // proprietary
-                CompressionFormat.HEVAG => "dat", // proprietary
-                CompressionFormat.XMA => "dat", // proprietary
-                CompressionFormat.AAC => "aac",
-                CompressionFormat.GCADPCM => "wav", // nintendo adpcm
-                CompressionFormat.ATRAC9 => "dat", // proprietary
-                _ => ""
-            };
-        }
-
-        private bool GetAudioBytes(AssetContainer cont, string filepath, ulong offset, ulong size, out byte[] audioData)
+        private bool GetVideoBytes(AssetContainer cont, string filepath, ulong offset, ulong size, out byte[] videoData)
         {
             if (string.IsNullOrEmpty(filepath))
             {
-                audioData = Array.Empty<byte>();
+                videoData = Array.Empty<byte>();
                 return false;
             }
 
@@ -236,7 +162,7 @@ namespace AudioPlugin
                     if (info.Name == searchPath)
                     {
                         reader.Position = info.Offset + (long)offset;
-                        audioData = reader.ReadBytes((int)size);
+                        videoData = reader.ReadBytes((int)size);
                         return true;
                     }
                 }
@@ -256,7 +182,7 @@ namespace AudioPlugin
                 // read from file
                 AssetsFileReader reader = new AssetsFileReader(resourceFilePath);
                 reader.Position = (long)offset;
-                audioData = reader.ReadBytes((int)size);
+                videoData = reader.ReadBytes((int)size);
                 return true;
             }
 
@@ -268,27 +194,27 @@ namespace AudioPlugin
                 // read from file
                 AssetsFileReader reader = new AssetsFileReader(resourceFileName);
                 reader.Position = (long)offset;
-                audioData = reader.ReadBytes((int)size);
+                videoData = reader.ReadBytes((int)size);
                 return true;
             }
 
-            audioData = Array.Empty<byte>();
+            videoData = Array.Empty<byte>();
             return false;
         }
     }
 
-    public class ImportAudioClipOption : UABEAPluginOption
+    public class ImportVideoClipOption : UABEAPluginOption
     {
         public bool SelectionValidForPlugin(AssetsManager am, UABEAPluginAction action, List<AssetContainer> selection, out string name)
         {
-            name = "Import audio file";
+            name = "Import video file";
 
             if (action != UABEAPluginAction.Import)
                 return false;
 
             foreach (AssetContainer cont in selection)
             {
-                if (cont.ClassId != (int)AssetClassID.AudioClip)
+                if (cont.ClassId != 329) // VideoClip ClassID
                     return false;
             }
             return true;
@@ -315,7 +241,7 @@ namespace AudioPlugin
 
             string dir = selectedFolderPaths[0];
 
-            List<string> extensions = new List<string>() { "*.wav", "*.ogg", "*.mp3", "*.aac" };
+            List<string> extensions = new List<string>() { "*.mp4", "*.webm", "*.mov", "*.avi", "*.mkv", "*.ogv" };
             ImportBatch dialog = new ImportBatch(workspace, selection, dir, extensions);
             List<ImportBatchInfo> batchInfos = await dialog.ShowDialog<List<ImportBatchInfo>>(win);
             
@@ -328,12 +254,12 @@ namespace AudioPlugin
                 AssetTypeValueField baseField = workspace.GetBaseField(cont);
 
                 string file = batchInfo.importFile;
-                byte[] audioData = File.ReadAllBytes(file);
+                byte[] videoData = File.ReadAllBytes(file);
 
-                // Update the audio data size
-                baseField["m_Resource.m_Size"].AsULong = (ulong)audioData.Length;
+                // Update the video data size
+                baseField["m_ExternalResources.m_Size"].AsULong = (ulong)videoData.Length;
 
-                // Note: The actual audio data should be written to an external resource file
+                // Note: The actual video data should be written to an external resource file
                 // For simplicity, we'll store it inline (this may not work for all Unity versions)
                 // In a production plugin, you'd want to handle external .resS files properly
                 
@@ -353,10 +279,10 @@ namespace AudioPlugin
 
             var selectedFiles = await win.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions()
             {
-                Title = "Open audio file",
+                Title = "Open video file",
                 FileTypeFilter = new List<FilePickerFileType>()
                 {
-                    new FilePickerFileType("Audio files") { Patterns = new List<string>() { "*.wav", "*.ogg", "*.mp3", "*.aac" } },
+                    new FilePickerFileType("Video files") { Patterns = new List<string>() { "*.mp4", "*.webm", "*.mov", "*.avi", "*.mkv", "*.ogv" } },
                     new FilePickerFileType("All files (*.*)") { Patterns = new List<string>() { "*" } }
                 }
             });
@@ -368,12 +294,12 @@ namespace AudioPlugin
             string file = selectedFilePaths[0];
 
             AssetTypeValueField baseField = workspace.GetBaseField(cont);
-            byte[] audioData = File.ReadAllBytes(file);
+            byte[] videoData = File.ReadAllBytes(file);
 
-            // Update the audio data size
-            baseField["m_Resource.m_Size"].AsULong = (ulong)audioData.Length;
+            // Update the video data size
+            baseField["m_ExternalResources.m_Size"].AsULong = (ulong)videoData.Length;
 
-            // Note: The actual audio data should be written to an external resource file
+            // Note: The actual video data should be written to an external resource file
             // For simplicity, we'll store it inline (this may not work for all Unity versions)
             // In a production plugin, you'd want to handle external .resS files properly
 
@@ -387,16 +313,16 @@ namespace AudioPlugin
         }
     }
 
-    public class AudioClipPlugin : UABEAPlugin
+    public class VideoClipPlugin : UABEAPlugin
     {
         public PluginInfo Init()
         {
             PluginInfo info = new PluginInfo();
-            info.name = "AudioClip Import/Export";
+            info.name = "VideoClip Import/Export";
 
             info.options = new List<UABEAPluginOption>();
-            info.options.Add(new ImportAudioClipOption());
-            info.options.Add(new ExportAudioClipOption());
+            info.options.Add(new ImportVideoClipOption());
+            info.options.Add(new ExportVideoClipOption());
             return info;
         }
     }
