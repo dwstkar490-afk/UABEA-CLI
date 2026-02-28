@@ -16,6 +16,8 @@
     <Compile Include="Program.cs" />
     <Compile Include="CommandLineHandler.cs" />
     <Compile Include="Logic/AssetImportExport.cs" />
+    <Compile Include="Logic/FileTypeDetector.cs" />
+    <Compile Include="Logic/Emip.cs" />
     <Compile Include="Workspace/AssetContainer.cs" />
   </ItemGroup>
 
