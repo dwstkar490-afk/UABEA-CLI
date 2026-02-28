@@ -2,9 +2,6 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
-using Avalonia;
-using Avalonia.Controls;
-using Avalonia.Controls.ApplicationLifetimes;
 
 namespace UABEAvalonia
 {
@@ -42,16 +39,17 @@ namespace UABEAvalonia
             AppDomain currentDomain = AppDomain.CurrentDomain;
             currentDomain.UnhandledException += new UnhandledExceptionEventHandler(UABEAExceptionHandler);
 
-            if (args.Length > 0)
-            {
-                CommandLineHandler.CLHMain(args);
-            }
-            else
+            if (args.Length == 0)
             {
                 if (usesConsole)
+                {
                     CommandLineHandler.PrintHelp();
-                BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+                }
+
+                return;
             }
+
+            CommandLineHandler.CLHMain(args);
         }
 
         public static void UABEAExceptionHandler(object sender, UnhandledExceptionEventArgs args)
@@ -74,11 +72,5 @@ namespace UABEAvalonia
                 }
             }
         }
-
-        // Avalonia configuration, don't remove; also used by visual designer.
-        public static AppBuilder BuildAvaloniaApp()
-            => AppBuilder.Configure<App>()
-                .UsePlatformDetect()
-                .LogToTrace();
     }
 }
